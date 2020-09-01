@@ -23,6 +23,8 @@ use crate::util::clone_into_array;
 use evercrypt::prelude::*;
 use std::collections::HashMap;
 
+pub(crate) const RATCHET_LIMIT: u32 = 10;
+
 pub struct Keystore {
     keys: HashMap<u64, Key>,
 }
@@ -39,8 +41,10 @@ impl Keystore {
     pub fn get_key(&self, k_id: u64) -> Option<&Key> {
         self.keys.get(&k_id)
     }
+    pub fn get_key_mut(&mut self, k_id: u64) -> Option<&mut Key> {
+        self.keys.get_mut(&k_id)
+    }
 }
-
 
 #[derive(Clone)]
 pub struct Key {
@@ -76,6 +80,11 @@ impl Key {
             32,
         );
         clone_into_array(&k)
+    }
+    pub fn ratchet(&mut self) {
+        // K(i) = HKDF(K(i-1), 'SFrameRatchetKey', 32)
+        let k_i = hkdf(HmacMode::Sha256, &[], &self.value, b"SFrameRatchetKey", 32);
+        self.value = clone_into_array(&k_i);
     }
 }
 

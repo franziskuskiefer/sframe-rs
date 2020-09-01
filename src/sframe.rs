@@ -43,7 +43,7 @@
 //! ```
 
 use crate::header::{Header, Metadata};
-use crate::keys::{get_nonce, Key, Keystore};
+use crate::keys::{get_nonce, Key, Keystore, RATCHET_LIMIT};
 use crate::util::*;
 use evercrypt::prelude::*;
 
@@ -119,28 +119,39 @@ impl Sframe {
         encrypted_frame: &[u8],
         header: &Header,
         auth_tag: &[u8],
-        key_store: &Keystore,
+        key_store: &mut Keystore,
         frame_type: &FrameType,
     ) -> Result<Vec<u8>, Error> {
-        let key = match key_store.get_key(header.get_kid()) {
+        let key = match key_store.get_key_mut(header.get_kid()) {
             Some(k) => k,
             None => return Err(Error::UnknownKey),
         };
-        let salt_key = key.derive_iv_salt();
-        
-        let ctr = header.get_ctr();
-        let iv = get_nonce(&salt_key, &ctr.get_bytes());
-        let encryption_key = key.derive_media_key();
-        let ptxt = match aead_decrypt(
-            AeadMode::Aes128Gcm,
-            &encryption_key,
-            &encrypted_frame[0..encrypted_frame.len() - 16],
-            &encrypted_frame[encrypted_frame.len() - 16..],
-            &iv,
-            &[],
-        ) {
-            Ok(c) => c,
-            Err(_) => return Err(Error::DecryptionFailed),
+        let mut ptxt = Err(Error::DecryptionFailed);
+        for _ in 0..RATCHET_LIMIT {
+            let salt_key = key.derive_iv_salt();
+            let ctr = header.get_ctr();
+            let iv = get_nonce(&salt_key, &ctr.get_bytes());
+            let encryption_key = key.derive_media_key();
+            match aead_decrypt(
+                AeadMode::Aes128Gcm,
+                &encryption_key,
+                &encrypted_frame[0..encrypted_frame.len() - 16],
+                &encrypted_frame[encrypted_frame.len() - 16..],
+                &iv,
+                &[],
+            ) {
+                Ok(c) => {
+                    ptxt = Ok(c);
+                    break;
+                }
+                Err(_) => {
+                    key.ratchet();
+                }
+            };
+        }
+        let ptxt = match ptxt {
+            Ok(p) => p,
+            Err(e) => return Err(e),
         };
 
         let auth_key = key.derive_authentication_key();
